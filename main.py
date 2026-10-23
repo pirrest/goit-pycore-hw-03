@@ -1,93 +1,159 @@
 import datetime as dt
 import random
+import re
+
+COUNTRY_CODE = "+38"
+WEEKEND_DAYS = (5, 6)
+UPCOMING_DAYS = 7
 
 
-# returns number of days from today
-# if given date is in the future, returns negative number
-# date should be in YYYY-MM-DD format
-# returns None if date is not in the correct format
 def get_days_from_today(date: str) -> int | None:
+    """Return the number of days from the given date to today.
+
+    The result is negative if the date is in the future. Only calendar days
+    are taken into account, time of day is ignored.
+
+    Args:
+        date: Date string in the 'YYYY-MM-DD' format.
+
+    Returns:
+        Whole number of days, or None if the date has an invalid format.
+    """
     target_date = parse_date(date)
     if target_date is None:
         return None
     today = dt.date.today()
     return get_days_between_dates(today, target_date)
 
-# returns number of days from today
-# if given date is in the future, returns negative number
+
 def get_days_between_dates(date_a: dt.date, date_b: dt.date) -> int:
+    """Return the number of days from date_b to date_a (negative if date_b is later)."""
     return (date_a - date_b).days
 
-# parses date in YYYY-MM-DD format
-# separator in the format can be set via the parameter, by default "-"
-def parse_date(date: str, separator="-") -> dt.date | None:
+
+def parse_date(date: str, separator: str = "-") -> dt.date | None:
+    """Parse a 'YYYY<sep>MM<sep>DD' string into a date.
+
+    Args:
+        date: Date string to parse.
+        separator: Separator between date parts, "-" by default.
+
+    Returns:
+        The parsed date, or None if the input is not a valid date string.
+    """
     try:
         return dt.datetime.strptime(date, f"%Y{separator}%m{separator}%d").date()
     except (ValueError, TypeError):
         return None
 
-# returns list of random numbers from min to max
-# quantity parameter specifies quantity of numbers
-# max should be less than 1000
-def get_numbers_ticket(min:int, max:int, quantity:int) -> list[int]:
-    if not (0 < min < max < 1000 and max > 0) or not (min < quantity < max):
+
+def _is_int(value) -> bool:
+    """Return True for real integers, excluding bool."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def get_numbers_ticket(min: int, max: int, quantity: int) -> list[int]:
+    """Generate a sorted list of unique random numbers for a lottery ticket.
+
+    Args:
+        min: Lowest possible number, at least 1.
+        max: Highest possible number, at most 1000.
+        quantity: How many numbers to pick, from 1 to the size of the range.
+
+    Returns:
+        Sorted list of unique numbers, or an empty list if the parameters
+        are not integers or violate the constraints.
+    """
+    if not all(_is_int(value) for value in (min, max, quantity)):
         return []
-    all_numbers = [min + i for i in range(max)]
-    selected_numbers = []
-    while quantity > 0:
-        quantity -= 1
-        if len(all_numbers) == 0:
-            break
-        number = random.choice(all_numbers)
-        all_numbers.remove(number)
-        selected_numbers.append(number)
-    return sorted(selected_numbers)
+    if not 1 <= min <= max <= 1000:
+        return []
+    if not 1 <= quantity <= max - min + 1:
+        return []
+    return sorted(random.sample(range(min, max + 1), quantity))
 
-# formats phone_number to the country_code + digits
-# if phone_number starts with country_code, it will be ignored
-def normalize_phone(phone_number:str, country_code:str = '+380') -> str | None:
-    assert isinstance(phone_number, str), "phone_number must be a string"
-    assert isinstance(country_code, str), "country_code must be a string"
-    phone_number = ''.join(filter(str.isdigit, phone_number))
-    if len(phone_number) == 0:
+
+def normalize_phone(phone_number: str) -> str | None:
+    """Normalize a phone number to the '+<digits>' format for SMS delivery.
+
+    All characters except digits and a leading '+' are removed. A number that
+    already has a '+' keeps its country code, one starting with '380' gets only
+    the '+', any other number gets the default '+38' prefix.
+
+    Args:
+        phone_number: Phone number in an arbitrary format.
+
+    Returns:
+        Normalized number, or None if the input is not a string or has no digits.
+    """
+    if not isinstance(phone_number, str):
         return None
-    for char in country_code:
-        if phone_number.startswith(char):
-            phone_number = phone_number[1:]
-    return f'{country_code}{phone_number}'
+    digits = re.sub(r"\D", "", phone_number)
+    if not digits:
+        return None
+    if re.match(r"\s*\+", phone_number):
+        return f"+{digits}"
+    if digits.startswith(COUNTRY_CODE.lstrip("+") + "0"):
+        return f"+{digits}"
+    return f"{COUNTRY_CODE}{digits}"
 
-# returns list of users whose birthday is in the next 7 days
-# each user should have `name` field and `birthday` field in format yyyy.mm.dd
-# returns list of maps with `name` and `congratulation_date` fields in the same format
-def get_upcoming_birthdays(users):
+
+def _birthday_in_year(birth_date: dt.date, year: int) -> dt.date:
+    """Return the birthday in the given year, moving Feb 29 to Mar 1 in non-leap years."""
+    try:
+        return birth_date.replace(year=year)
+    except ValueError:
+        return dt.date(year, 3, 1)
+
+
+def get_upcoming_birthdays(users: list[dict]) -> list[dict]:
+    """Return users whose birthday falls within the next 7 days, including today.
+
+    A congratulation date that falls on a weekend is moved to the next Monday.
+    Users with an invalid birthday are skipped.
+
+    Args:
+        users: List of dicts with `name` and `birthday` ('YYYY.MM.DD') keys.
+
+    Returns:
+        List of dicts with `name` and `congratulation_date` ('YYYY.MM.DD') keys.
+    """
+    today = dt.date.today()
     result = []
     for user in users:
-        user_birth_date = parse_date(user["birthday"], separator=".")
-        today = dt.date.today()
-        try:
-            birthday_this_year = user_birth_date.replace(year=today.year)
-        except ValueError:
-            # Shifts Feb 29 to Mar 1 in non-leap years
-            birthday_this_year = user_birth_date.replace(year=today.year, month=3, day=1)
+        birth_date = parse_date(user.get("birthday"), separator=".")
+        if birth_date is None:
+            continue
 
-        days_delta = get_days_between_dates(today, birthday_this_year)
-        print(days_delta)
-        if 0 >= days_delta >= -7:
-            congratulation_date = birthday_this_year
-            if birthday_this_year.weekday() in (5, 6):
-                # Shift congratulation date to the next Monday if birthday falls on a weekend
-                congratulation_date += dt.timedelta(days=(7 - birthday_this_year.weekday()))
-            result.append({"name": user["name"], "congratulation_date": congratulation_date.strftime("%Y.%m.%d")})
+        next_birthday = _birthday_in_year(birth_date, today.year)
+        if next_birthday < today:
+            # Already passed this year, so the next one is in the following year
+            next_birthday = _birthday_in_year(birth_date, today.year + 1)
+
+        if get_days_between_dates(next_birthday, today) >= UPCOMING_DAYS:
+            continue
+
+        congratulation_date = next_birthday
+        if congratulation_date.weekday() in WEEKEND_DAYS:
+            # Shift the congratulation to the next Monday
+            congratulation_date += dt.timedelta(days=7 - congratulation_date.weekday())
+        result.append({
+            "name": user["name"],
+            "congratulation_date": congratulation_date.strftime("%Y.%m.%d"),
+        })
     return result
+
 
 def start():
     date_str = '2026-10-09'
     days = get_days_from_today(date_str)
     print(f'days from {date_str} to today: {days}')
-    numbers = get_numbers_ticket(1, 100, 10)
-    print(f'numbers: {numbers}')
-    numbers2 = get_numbers_ticket(1, -2, 10)
-    print(f'numbers2: {numbers2}')
+    print(f'invalid date: {get_days_from_today("09.10.2026")}')
+
+    print(f'numbers: {get_numbers_ticket(1, 49, 6)}')
+    print(f'min == max: {get_numbers_ticket(5, 5, 1)}')
+    print(f'invalid range: {get_numbers_ticket(1, -2, 10)}')
+    print(f'too many numbers: {get_numbers_ticket(10, 12, 5)}')
 
     raw_numbers = [
         "067\\t123 4567",
@@ -99,6 +165,7 @@ def start():
         "(050)8889900",
         "38050-111-22-22",
         "38050 111 22 11   ",
+        "+49 151 2345 6789",
         "dsgdsgfdsg"
     ]
     sanitized_numbers = []
@@ -108,14 +175,16 @@ def start():
             sanitized_numbers.append(sanitized_number)
     print("Phone numbers for SMS:", sanitized_numbers)
 
+    today = dt.date.today()
     users = [
-        {"name": "John Doe", "birthday": "1985.10.21"},
-        {"name": "Jane Smith", "birthday": "1990.10.23"},
-        {"name": "Jane Smith 2", "birthday": "1990.01.23"},
-        {"name": "Jane Smith 3", "birthday": "1990.10.24"}
+        {"name": "Today", "birthday": today.replace(year=1990).strftime("%Y.%m.%d")},
+        {"name": "In 6 days", "birthday": (today + dt.timedelta(days=6)).replace(year=1985).strftime("%Y.%m.%d")},
+        {"name": "In 7 days", "birthday": (today + dt.timedelta(days=7)).replace(year=1985).strftime("%Y.%m.%d")},
+        {"name": "Yesterday", "birthday": (today - dt.timedelta(days=1)).replace(year=1992).strftime("%Y.%m.%d")},
+        {"name": "Invalid", "birthday": "not a date"},
     ]
-    upcoming_birthdays = get_upcoming_birthdays(users)
-    print("Birthdays next 7 days:", upcoming_birthdays)
+    print("Birthdays next 7 days:", get_upcoming_birthdays(users))
+
 
 if __name__ == '__main__':
     start()
